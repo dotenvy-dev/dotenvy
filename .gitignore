@@ -7,6 +7,9 @@
 # Local config
 dotenvy.yaml
 
+# Internal plans
+.plans/
+
 # Compiled binary
 dotenvy
 
