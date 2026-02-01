@@ -39,6 +39,7 @@ brews:
   - repository:
       owner: dotenvy-dev
       name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     homepage: "https://github.com/dotenvy-dev/dotenvy"
     description: "Sync environment variables across deployment platforms"
     license: "MIT"
