@@ -1,0 +1,29 @@
+# Secrets
+.env.test
+.env.live
+.env.local
+.env
+
+# Local config
+dotenvy.yaml
+
+# Compiled binary
+dotenvy
+
+# AI tool configs
+CLAUDE.md
+
+# OS
+.DS_Store
+
+# Web app (separate repo)
+web/
+
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out

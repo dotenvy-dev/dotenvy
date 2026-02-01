@@ -1,0 +1,145 @@
+name: Autofix Issue
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  autofix:
+    if: false # disabled — enable when ready to trigger on new issues
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Claude Code
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Create branch
+        run: git checkout -b autofix/issue-${{ github.event.issue.number }}
+
+      - name: Run Claude Code
+        id: claude
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          PROMPT="You are fixing a GitHub issue for the dotenvy project (a Go CLI tool).
+
+          Issue #${{ github.event.issue.number }}: ${{ github.event.issue.title }}
+
+          ${{ github.event.issue.body }}
+
+          Instructions:
+          - Read the relevant code and understand the problem
+          - Implement a minimal fix following existing patterns in the codebase
+          - Run 'go test ./...' to verify your fix
+          - Do not create new files unless absolutely necessary
+          - Do not refactor unrelated code"
+
+          claude -p "$PROMPT" \
+            --model claude-sonnet-4-5-20250929 \
+            --max-turns 15 \
+            --output-format json \
+            > /tmp/claude_output.json 2>/tmp/claude_stderr.log || true
+
+          # Extract the result text from Claude's JSON output
+          if [ -f /tmp/claude_output.json ]; then
+            SUMMARY=$(cat /tmp/claude_output.json | jq -r '
+              [.[] | select(.type == "text") | .text] | join("\n")
+            ' 2>/dev/null || echo "Fix attempted — see diff for details.")
+          else
+            SUMMARY="Claude Code exited without output."
+          fi
+
+          # Write summary to file to avoid shell quoting issues
+          echo "$SUMMARY" > /tmp/fix_summary.txt
+
+      - name: Check for changes
+        id: changes
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+
+            DIFF_STAT=$(git diff --stat | head -20)
+            echo "$DIFF_STAT" > /tmp/diff_stat.txt
+          else
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit and push
+        if: steps.changes.outputs.has_changes == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "autofix: attempt fix for #${{ github.event.issue.number }}
+
+          ${{ github.event.issue.title }}"
+          git push origin autofix/issue-${{ github.event.issue.number }}
+
+      - name: Notify Discord (fix found)
+        if: steps.changes.outputs.has_changes == 'true'
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          ISSUE_NUM="${{ github.event.issue.number }}"
+          ISSUE_TITLE="${{ github.event.issue.title }}"
+          REPO="${{ github.repository }}"
+          SUMMARY=$(cat /tmp/fix_summary.txt | head -20)
+          DIFF_STAT=$(cat /tmp/diff_stat.txt)
+          COMPARE_URL="https://github.com/${REPO}/compare/main...autofix/issue-${ISSUE_NUM}"
+
+          # Build Discord message as JSON
+          jq -n \
+            --arg content "$(printf '🔧 Autofix: #%s — %s\n\n%s\n\nFiles changed:\n%s\n\nReview: %s' \
+              "$ISSUE_NUM" "$ISSUE_TITLE" "$SUMMARY" "$DIFF_STAT" "$COMPARE_URL")" \
+            '{content: $content}' > /tmp/discord_payload.json
+
+          curl -s -H "Content-Type: application/json" \
+            -d @/tmp/discord_payload.json \
+            "$DISCORD_WEBHOOK_URL"
+
+      - name: Comment on issue (fix found)
+        if: steps.changes.outputs.has_changes == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue comment ${{ github.event.issue.number }} \
+            --body "Automated fix attempted on branch \`autofix/issue-${{ github.event.issue.number }}\` — review pending.
+
+          [View changes](https://github.com/${{ github.repository }}/compare/main...autofix/issue-${{ github.event.issue.number }})"
+
+      - name: Notify Discord (no fix)
+        if: steps.changes.outputs.has_changes == 'false'
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          jq -n \
+            --arg content "⚠️ Could not generate fix for #${{ github.event.issue.number }} — ${{ github.event.issue.title }}" \
+            '{content: $content}' > /tmp/discord_payload.json
+
+          curl -s -H "Content-Type: application/json" \
+            -d @/tmp/discord_payload.json \
+            "$DISCORD_WEBHOOK_URL"
+
+      - name: Comment on issue (no fix)
+        if: steps.changes.outputs.has_changes == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue comment ${{ github.event.issue.number }} \
+            --body "Automated fix was attempted but no changes were generated. A human will take a look."
